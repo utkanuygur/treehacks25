@@ -1,6 +1,8 @@
 import openai
 from typing import Annotated
 from typing_extensions import TypedDict
+import os
+from dotenv import load_dotenv
 
 # For typed messages rather than dict-based
 from langchain.schema import AIMessage, HumanMessage, SystemMessage
@@ -8,20 +10,21 @@ from langchain.schema import AIMessage, HumanMessage, SystemMessage
 # LangGraph imports
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+import requests
+
+URL = "https://fe81-68-65-164-215.ngrok-free.app/predict"
+
+load_dotenv()
 
 ###############################################################################
 # 1. Set your OpenAI API key directly in the code
 ###############################################################################
-openai.api_key = "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"
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def call_openai(messages):
     """
     messages: List of dicts like { 'role': 'system'|'user'|'assistant', 'content': <string> }
     Returns the string content of the model's reply.
-    
-    NOTE: We are storing typed messages (AIMessage, HumanMessage, etc.) in 'state["messages"]'
-    internally. However, for this simple call, we still build dict-based 'messages' to pass
-    to openai.ChatCompletion.create().
     """
     response = openai.ChatCompletion.create(
         model="gpt-4o",  # or "gpt-4", etc.
@@ -31,12 +34,15 @@ def call_openai(messages):
     return response["choices"][0]["message"]["content"]
 
 ###############################################################################
-# 2. Define the State for LangGraph
+# 2. Define the State for LangGraph with additional data keys
 ###############################################################################
 class MyState(TypedDict):
-    # We'll store typed messages (HumanMessage, AIMessage, etc.) in this list
-    # add_messages means each node's returned messages get appended to the existing list
+    # Store typed messages from the beginning
     messages: Annotated[list, add_messages]
+    # New keys for the three data inputs:
+    ds_data: dict
+    mobile_data: dict
+    os_data: dict
     os_answer: str
     mobile_answer: str
     application_answer: str
@@ -47,13 +53,11 @@ graph_builder = StateGraph(MyState)
 ###############################################################################
 # 3. Define Node Functions
 ###############################################################################
-
 def orchestrator_initial(state: MyState) -> dict:
     """
-    First orchestrator call:
-    - We confirm the user's intent and plan to gather OS/Mobile/App answers.
+    The initial orchestrator call: acknowledge the user's request and announce
+    that DS, mobile, and OS perspectives will be gathered.
     """
-    # Grab the last message content. Because we are storing typed messages, use .content
     if state["messages"]:
         user_input = state["messages"][-1].content
     else:
@@ -62,56 +66,70 @@ def orchestrator_initial(state: MyState) -> dict:
     prompt = (
         "You are the Orchestrator. The user said:\n\n"
         f"{user_input}\n\n"
-        "Acknowledge the request. Next, we will gather OS, mobile, and application "
-        "perspectives before providing a final answer."
+        "Acknowledge the request. Next, we will gather Distributed Systems, Mobile Systems, and "
+        "Operating Systems perspectives before providing a final answer."
     )
     ai_response = call_openai(
         [
             {"role": "system", "content": prompt}
         ]
     )
-    # Return only the newly generated message as an AIMessage
     return {
         "messages": [AIMessage(content=ai_response)]
     }
 
 def os_llm(state: MyState) -> dict:
     """
-    Answers from an OS perspective.
+    Distributed Systems perspective.
     """
-    # Here, we're referencing the *first* message's content (index 0),
-    # which we assume is the user's original question.
     if state["messages"]:
         user_input = state["messages"][0].content
     else:
         user_input = "No user input"
+    
+    ds_data = state["ds_data"]
+    function_output = requests.post(URL, json=ds_data)
+    print(function_output.content)
 
     prompt = (
-        "You are an OS expert. The user asked:\n\n"
+        "You are a Distributed Systems expert. Based on the following function output (which "
+        "states the probability of an error occurring in Distributed Systems, where 0 means no error "
+        "and 1 means there is an error) and the user's query, tell the user whether the problem "
+        "comes from Distributed Systems along with the probability.\n\n"
+        f"{function_output.content}\n\n"
+        "User question:\n"
         f"{user_input}\n\n"
-        "Answer from an operating system perspective."
+        "Answer:"
     )
     ai_response = call_openai(
         [
             {"role": "system", "content": prompt}
         ]
     )
-    # We store the OS answer in the state. We do *not* append a new 'messages' entry
     return {"os_answer": ai_response}
 
 def mobile_llm(state: MyState) -> dict:
     """
-    Answers from a mobile device perspective.
+    Mobile Systems perspective.
     """
     if state["messages"]:
         user_input = state["messages"][0].content
     else:
         user_input = "No user input"
+    
+    mobile_data = state["mobile_data"]
+    function_output = requests.post(URL, json=mobile_data)
+    print(function_output.content)
 
     prompt = (
-        "You are a mobile device expert. The user asked:\n\n"
+        "You are a Mobile Systems expert. Based on the following function output (which "
+        "states the probability of an error occurring in Mobile Systems, where 0 means no error "
+        "and 1 means there is an error) and the user's query, tell the user whether the problem "
+        "comes from Mobile Systems along with the probability.\n\n"
+        f"{function_output.content}\n\n"
+        "User question:\n"
         f"{user_input}\n\n"
-        "Answer from a mobile perspective."
+        "Answer:"
     )
     ai_response = call_openai(
         [
@@ -122,17 +140,26 @@ def mobile_llm(state: MyState) -> dict:
 
 def application_llm(state: MyState) -> dict:
     """
-    Answers from an application perspective.
+    Operating Systems perspective.
     """
     if state["messages"]:
         user_input = state["messages"][0].content
     else:
         user_input = "No user input"
+    
+    os_data = state["os_data"]
+    function_output = requests.post(URL, json=os_data)
+    print(function_output.content)
 
     prompt = (
-        "You are an application expert. The user asked:\n\n"
+        "You are an Operating Systems expert. Based on the following function output (which "
+        "states the probability of an error occurring in Operating Systems, where 0 means no error "
+        "and 1 means there is an error) and the user's query, tell the user whether the problem "
+        "comes from Operating Systems along with the probability.\n\n"
+        f"{function_output.content}\n\n"
+        "User question:\n"
         f"{user_input}\n\n"
-        "Answer from an application perspective."
+        "Answer:"
     )
     ai_response = call_openai(
         [
@@ -143,17 +170,17 @@ def application_llm(state: MyState) -> dict:
 
 def orchestrator_combine(state: MyState) -> dict:
     """
-    Final orchestrator call: combine the three specialized answers.
+    Final orchestrator call: combine the three expert answers into one concise answer.
     """
     os_ans = state.get("os_answer", "")
     mobile_ans = state.get("mobile_answer", "")
     app_ans = state.get("application_answer", "")
-
+    
     prompt = (
         "You have the following three expert answers:\n\n"
-        f"OS perspective:\n{os_ans}\n\n"
-        f"Mobile perspective:\n{mobile_ans}\n\n"
-        f"Application perspective:\n{app_ans}\n\n"
+        f"Distributed Systems perspective:\n{os_ans}\n\n"
+        f"Mobile Systems perspective:\n{mobile_ans}\n\n"
+        f"Operating Systems perspective:\n{app_ans}\n\n"
         "Combine them into a single, concise answer for the user."
     )
     ai_response = call_openai(
@@ -172,8 +199,7 @@ graph_builder.add_node("mobile_llm", mobile_llm)
 graph_builder.add_node("application_llm", application_llm)
 graph_builder.add_node("orchestrator_combine", orchestrator_combine)
 
-# A simple linear flow:
-#   START -> orchestrator_initial -> os_llm -> mobile_llm -> application_llm -> orchestrator_combine -> END
+# Define a linear flow for the graph:
 graph_builder.add_edge(START, "orchestrator_initial")
 graph_builder.add_edge("orchestrator_initial", "os_llm")
 graph_builder.add_edge("os_llm", "mobile_llm")
@@ -188,19 +214,22 @@ graph = graph_builder.compile()
 ###############################################################################
 if __name__ == "__main__":
     user_query = "My Mac shows a strange error for 3 days. What could be causing it?"
-
-    # Instead of using dict-based messages, let's store typed messages from the get-go:
+    
+    # Provide the user question plus three datasets as part of the initial state:
     initial_state = {
-        # We'll store a HumanMessage to represent the user
         "messages": [HumanMessage(content=user_query)],
+        "ds_data": {"features": [21, 0, 0, 203, 0, 3, 0, 0, 0, 3, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 1, 3, 0, 0, 3, 0, 0, 0]},
+        "mobile_data": {"features": [25, 1, 0, 190, 1, 2, 0, 1, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 2, 0, 1, 2, 0, 0, 0]},
+        "os_data": {"features": [20, 0, 1, 210, 0, 3, 0, 0, 1, 3, 0, 3, 0, 1, 0, 0, 0, 0, 0, 0, 1, 3, 1, 3, 0, 0, 3, 0, 1, 0]},
         "os_answer": "",
         "mobile_answer": "",
         "application_answer": "",
         "final_answer": "",
     }
-
-    # Since 'graph.run' no longer exists, we use graph.stream and capture the final state.
+    
     for idx, event in enumerate(graph.stream(initial_state)):
         print(f"\n=== Event {idx} ===")
         print("State keys:", list(event.keys()))
-        print(event)
+        key1 = list(event.keys())[0]
+        key2 = list(event[key1].keys())[0]
+        print(event[key1][key2])
